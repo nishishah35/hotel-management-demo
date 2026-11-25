@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Sign in · {{hotel.get('hotel_name','Harbor House Hotel')}}</title><link rel="stylesheet" href="{{url_for('static',filename='css/app.css')}}"></head>
+<body class="login-page">
+  <main class="login-shell">
+    <section class="login-visual" aria-label="Hotel management welcome">
+      <div class="login-brand"><span class="brandmark big">H</span><span>{{hotel.get('hotel_name','Harbor House Hotel')}}<small>HOTEL MANAGEMENT</small></span></div>
+      <div class="visual-copy"><span class="visual-kicker"><i></i> YOUR PROPERTY, IN GOOD HANDS</span><h1>Make every<br>stay feel <em>effortless.</em></h1><p>A considered space for the details that keep your hotel running beautifully.</p></div>
+      <div class="visual-art" aria-hidden="true"><div class="art-glow"></div><div class="art-window"><div class="window-light"></div><div class="window-grid"></div></div><div class="art-building"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><div class="art-floor"></div></div>
+      <div class="visual-foot"><span>ROOMS <b>·</b> GUESTS <b>·</b> OPERATIONS</span><span class="secure-label"><i></i> STORED LOCALLY</span></div>
+    </section>
+    <section class="login-form-panel">
+      <div class="form-panel-top"><span class="eyebrow">ADMINISTRATOR ACCESS</span><span class="lock-mark">⌑</span></div>
+      <div class="form-title"><h2>Welcome back</h2><p>Sign in to continue to your dashboard.</p></div>
+      {% with messages=get_flashed_messages(with_categories=true) %}{% for category,message in messages %}<div class="flash {{category}}">{{message}}</div>{% endfor %}{% endwith %}
+      <form method="post" class="signin-form"><label for="username">Username<input id="username" name="username" required autocomplete="username" autofocus placeholder="Enter your username"></label><label for="password">Password<input id="password" name="password" type="password" required autocomplete="current-password" placeholder="Enter your password"></label><button class="button primary wide" type="submit">Sign in <span aria-hidden="true">→</span></button></form>
+      <div class="login-divider"><span></span><b>PRIVATE HOTEL WORKSPACE</b><span></span></div>
+      <p class="login-hint">Your hotel data stays on this device.<br><span>New installation? Use the initial administrator account provided with setup.</span></p>
+      <div class="panel-bottom"><i></i> Secure local sign-in</div>
+    </section>
+  </main>
+</body>
+</html>
