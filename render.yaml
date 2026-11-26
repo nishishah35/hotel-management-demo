@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: hotel-management-demo
+    name: hotel-management-client-preview
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
