@@ -379,7 +379,7 @@ def report_csv():
 def settings():
     with connect() as db:
         if request.method=='POST':
-            for k in ['hotel_name','address','phone','email','currency','tax','invoice_footer']: db.execute('INSERT INTO hotel_settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',(k,request.form.get(k,'')))
+            for k in ['address','phone','email','currency','tax','invoice_footer']: db.execute('INSERT INTO hotel_settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',(k,request.form.get(k,'')))
             new=request.form.get('new_password','')
             if new:
                 if len(new)<8: flash('New password must contain at least 8 characters.','error'); return redirect(url_for('settings'))
