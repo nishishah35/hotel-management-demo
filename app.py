@@ -117,7 +117,15 @@ def dashboard():
         next_month=(local_today.replace(day=28)+timedelta(days=4)).replace(day=1)
         next_month_start=datetime.combine(next_month,time.min,HOTEL_TIMEZONE).astimezone(timezone.utc).replace(tzinfo=None).isoformat(sep=' ')
         stats['monthly_booked']=db.execute("SELECT coalesce(sum(total),0) FROM bookings WHERE created>=? AND created<? AND status!='Cancelled'",(month_start,next_month_start)).fetchone()[0]
-        stats['average_booking']=db.execute("SELECT coalesce(avg(total),0) FROM bookings WHERE created>=? AND created<? AND status!='Cancelled'",(month_start,next_month_start)).fetchone()[0]
+        month_start_date=local_today.replace(day=1)
+        today_cutoff=local_today+timedelta(days=1)
+        booked_ranges=db.execute("SELECT checkin,checkout FROM bookings WHERE status!='Cancelled' AND checkin<? AND checkout>?",(today_cutoff.isoformat(),month_start_date.isoformat())).fetchall()
+        booked_room_nights=0
+        for booking_range in booked_ranges:
+            range_start=max(date.fromisoformat(booking_range['checkin']),month_start_date)
+            range_end=min(date.fromisoformat(booking_range['checkout']),today_cutoff)
+            booked_room_nights+=max(0,(range_end-range_start).days)
+        stats['average_booked_rooms']=booked_room_nights/local_today.day
         stats['monthly_collected']=db.execute('SELECT coalesce(sum(amount),0) FROM payments WHERE paid_at>=? AND paid_at<?',(month_start,next_month_start)).fetchone()[0]
         recent=db.execute('SELECT b.*,g.name guest,r.number room FROM bookings b JOIN guests g ON g.id=b.guest_id JOIN rooms r ON r.id=b.room_id ORDER BY b.id DESC LIMIT 8').fetchall()
         chart=[]
