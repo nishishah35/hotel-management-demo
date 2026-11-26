@@ -295,6 +295,15 @@ def payments():
         owing=db.execute("SELECT b.id,round((b.total+coalesce(c.charges,0))*(1+b.tax_rate/100),2) total,g.name guest,r.number room,round((b.total+coalesce(c.charges,0))*(1+b.tax_rate/100),2)-coalesce(p.paid,0) due FROM bookings b JOIN guests g ON g.id=b.guest_id JOIN rooms r ON r.id=b.room_id LEFT JOIN (SELECT booking_id,sum(amount) charges FROM booking_charges GROUP BY booking_id) c ON c.booking_id=b.id LEFT JOIN (SELECT booking_id,sum(amount) paid FROM payments GROUP BY booking_id) p ON p.booking_id=b.id WHERE b.status!='Cancelled' AND round((b.total+coalesce(c.charges,0))*(1+b.tax_rate/100),2)>coalesce(p.paid,0) ORDER BY b.id DESC").fetchall()
     return render_template('payments.html',history=history,owing=owing)
 
+@app.post('/billing/hotel-details')
+@login_required
+def update_billing_hotel_details():
+    with connect() as db:
+        for key in ['address','phone','email','gstin','pan']:
+            db.execute('INSERT INTO hotel_settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',(key,request.form.get(key,'').strip()))
+    flash('Hotel bill details saved.','success')
+    return redirect(url_for('billing'))
+
 @app.get('/billing')
 @login_required
 def billing():
