@@ -298,16 +298,23 @@ def payments():
 @app.get('/billing')
 @login_required
 def billing():
+    edit_charge_id=request.args.get('edit_charge','')
     with connect() as db:
         active_bookings=db.execute("SELECT b.id,g.name guest,r.number room,b.checkin,b.checkout FROM bookings b JOIN guests g ON g.id=b.guest_id JOIN rooms r ON r.id=b.room_id WHERE b.status='Occupied' ORDER BY b.id DESC").fetchall()
-        items=db.execute('SELECT * FROM inventory WHERE quantity>0 ORDER BY name').fetchall()
+        editing_charge=None
+        if edit_charge_id.isdigit():
+            editing_charge=db.execute("SELECT c.*,b.status booking_status FROM booking_charges c JOIN bookings b ON b.id=c.booking_id WHERE c.id=? AND b.status='Occupied'",(int(edit_charge_id),)).fetchone()
+        if editing_charge:
+            items=db.execute('SELECT * FROM inventory WHERE quantity>0 OR id=? ORDER BY name',(editing_charge['item_id'],)).fetchall()
+        else:
+            items=db.execute('SELECT * FROM inventory WHERE quantity>0 ORDER BY name').fetchall()
         rows=db.execute("SELECT b.id,b.checkin,b.checkout,b.total,b.discount,b.tax_rate,b.status,b.created,g.name guest,g.mobile,r.number room,coalesce((SELECT sum(amount) FROM payments p WHERE p.booking_id=b.id),0) paid,coalesce((SELECT sum(amount) FROM booking_charges c WHERE c.booking_id=b.id),0) extras,round((b.total+coalesce((SELECT sum(amount) FROM booking_charges c WHERE c.booking_id=b.id),0))*(1+b.tax_rate/100),2) bill_total FROM bookings b JOIN guests g ON g.id=b.guest_id JOIN rooms r ON r.id=b.room_id WHERE b.status!='Cancelled' ORDER BY b.id DESC").fetchall()
-        charge_rows=db.execute('SELECT booking_id,item_name,quantity,unit_price,amount FROM booking_charges ORDER BY id').fetchall()
+        charge_rows=db.execute('SELECT id,booking_id,item_id,item_name,quantity,unit_price,amount FROM booking_charges ORDER BY id').fetchall()
     charges_by_booking={}
     for charge in charge_rows:
         charges_by_booking.setdefault(charge['booking_id'],[]).append(charge)
     bills=[{**dict(row),'bill_lines':charges_by_booking.get(row['id'],[]),'due':max(0,round(row['bill_total']-row['paid'],2))} for row in rows]
-    return render_template('billing.html',active_bookings=active_bookings,items=items,bills=bills)
+    return render_template('billing.html',active_bookings=active_bookings,items=items,bills=bills,editing_charge=editing_charge)
 
 @app.route('/inventory',methods=['GET','POST'])
 @login_required
@@ -347,6 +354,39 @@ def charge_inventory_to_guest():
             db.execute('INSERT INTO inventory_transactions(item_id,change,note) VALUES(?,?,?)',(item_id,-quantity,f'Charged to booking #{booking_id}'))
             db.execute('INSERT INTO booking_charges(booking_id,item_id,item_name,quantity,unit_price,amount) VALUES(?,?,?,?,?,?)',(booking_id,item_id,item['name'],quantity,unit_price,amount))
         flash('Item added to the guest bill and stock updated.','success')
+    except (ValueError,KeyError) as exc: flash(str(exc) or 'Enter valid guest charge details.','error')
+    return redirect(url_for('billing'))
+
+@app.post('/billing/guest-charge/<int:charge_id>/edit')
+@login_required
+def edit_guest_charge(charge_id):
+    try:
+        booking_id=int(request.form['booking_id']); item_id=int(request.form['item_id']); quantity=float(request.form['quantity'])
+        if quantity<=0: raise ValueError('Quantity must be greater than zero.')
+        with connect() as db:
+            old=db.execute('SELECT c.*,b.status booking_status FROM booking_charges c JOIN bookings b ON b.id=c.booking_id WHERE c.id=?',(charge_id,)).fetchone()
+            booking=db.execute('SELECT id,status FROM bookings WHERE id=?',(booking_id,)).fetchone()
+            item=db.execute('SELECT * FROM inventory WHERE id=?',(item_id,)).fetchone()
+            if not old: raise ValueError('Guest bill item not found.')
+            if old['booking_status']!='Occupied' or not booking or booking['status']!='Occupied': raise ValueError('Charges can only be edited for a guest who is currently checked in.')
+            if not item: raise ValueError('Inventory item not found.')
+            old_item_id=old['item_id']; old_quantity=float(old['quantity'])
+            if old_item_id==item_id:
+                change=old_quantity-quantity
+                update=db.execute('UPDATE inventory SET quantity=quantity+?,updated=CURRENT_TIMESTAMP WHERE id=? AND quantity+?>=?',(change,item_id,old_quantity,quantity))
+                if update.rowcount!=1: raise ValueError(f"Only {item['quantity']+old_quantity:g} {item['unit']} are available for this bill item.")
+                if abs(change)>0.000001:
+                    db.execute('INSERT INTO inventory_transactions(item_id,change,note) VALUES(?,?,?)',(item_id,change,f'Edited bill item #{charge_id}'))
+            else:
+                if old_item_id:
+                    db.execute('UPDATE inventory SET quantity=quantity+?,updated=CURRENT_TIMESTAMP WHERE id=?',(old_quantity,old_item_id))
+                    db.execute('INSERT INTO inventory_transactions(item_id,change,note) VALUES(?,?,?)',(old_item_id,old_quantity,f'Returned stock from edited bill item #{charge_id}'))
+                update=db.execute('UPDATE inventory SET quantity=quantity-?,updated=CURRENT_TIMESTAMP WHERE id=? AND quantity>=?',(quantity,item_id,quantity))
+                if update.rowcount!=1: raise ValueError(f"Only {item['quantity']:g} {item['unit']} of {item['name']} are in stock.")
+                db.execute('INSERT INTO inventory_transactions(item_id,change,note) VALUES(?,?,?)',(item_id,-quantity,f'Edited bill item #{charge_id}'))
+            unit_price=float(item['price']); amount=round(quantity*unit_price,2)
+            db.execute('UPDATE booking_charges SET booking_id=?,item_id=?,item_name=?,quantity=?,unit_price=?,amount=? WHERE id=?',(booking_id,item_id,item['name'],quantity,unit_price,amount,charge_id))
+        flash('Guest bill item updated and stock adjusted.','success')
     except (ValueError,KeyError) as exc: flash(str(exc) or 'Enter valid guest charge details.','error')
     return redirect(url_for('billing'))
 
