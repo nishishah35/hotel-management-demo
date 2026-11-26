@@ -108,6 +108,7 @@ def dashboard():
         today_start=datetime.combine(local_today,time.min,HOTEL_TIMEZONE).astimezone(timezone.utc).replace(tzinfo=None).isoformat(sep=' ')
         tomorrow_start=datetime.combine(local_today+timedelta(days=1),time.min,HOTEL_TIMEZONE).astimezone(timezone.utc).replace(tzinfo=None).isoformat(sep=' ')
         stats['bookings_today']=db.execute("SELECT count(*) FROM bookings WHERE created>=? AND created<? AND status!='Cancelled'",(today_start,tomorrow_start)).fetchone()[0]
+        stats['booked_today']=db.execute("SELECT coalesce(sum(total),0) FROM bookings WHERE created>=? AND created<? AND status!='Cancelled'",(today_start,tomorrow_start)).fetchone()[0]
         stats['checkins_today']=db.execute('SELECT count(*) FROM checkins WHERE at>=? AND at<?',(today_start,tomorrow_start)).fetchone()[0]
         stats['checkouts_today']=db.execute('SELECT count(*) FROM checkouts WHERE at>=? AND at<?',(today_start,tomorrow_start)).fetchone()[0]
         stats['revenue_today']=db.execute('SELECT coalesce(sum(amount),0) FROM payments WHERE paid_at>=? AND paid_at<?',(today_start,tomorrow_start)).fetchone()[0]
@@ -115,7 +116,8 @@ def dashboard():
         month_start=datetime.combine(local_today.replace(day=1),time.min,HOTEL_TIMEZONE).astimezone(timezone.utc).replace(tzinfo=None).isoformat(sep=' ')
         next_month=(local_today.replace(day=28)+timedelta(days=4)).replace(day=1)
         next_month_start=datetime.combine(next_month,time.min,HOTEL_TIMEZONE).astimezone(timezone.utc).replace(tzinfo=None).isoformat(sep=' ')
-        stats['monthly']=db.execute('SELECT coalesce(sum(amount),0) FROM payments WHERE paid_at>=? AND paid_at<?',(month_start,next_month_start)).fetchone()[0]
+        stats['monthly_booked']=db.execute("SELECT coalesce(sum(total),0) FROM bookings WHERE created>=? AND created<? AND status!='Cancelled'",(month_start,next_month_start)).fetchone()[0]
+        stats['monthly_collected']=db.execute('SELECT coalesce(sum(amount),0) FROM payments WHERE paid_at>=? AND paid_at<?',(month_start,next_month_start)).fetchone()[0]
         recent=db.execute('SELECT b.*,g.name guest,r.number room FROM bookings b JOIN guests g ON g.id=b.guest_id JOIN rooms r ON r.id=b.room_id ORDER BY b.id DESC LIMIT 8').fetchall()
         chart=[]
         for offset in range(6,-1,-1):
@@ -197,6 +199,8 @@ def bookings():
             return redirect(url_for('bookings'))
         rooms=db.execute("SELECT * FROM rooms WHERE status!='Maintenance' ORDER BY number").fetchall()
         rows=db.execute('SELECT b.*,g.name guest,g.mobile,g.email,g.address,g.id_proof,r.number room,coalesce((SELECT sum(amount) FROM payments p WHERE p.booking_id=b.id),0) paid FROM bookings b JOIN guests g ON g.id=b.guest_id JOIN rooms r ON r.id=b.room_id ORDER BY b.id DESC').fetchall()
+        now=datetime.now(HOTEL_TIMEZONE)
+        rows=[{**dict(row),'can_checkout':now>=datetime.combine(date.fromisoformat(row['checkout']),time(12,0),HOTEL_TIMEZONE)} for row in rows]
         if not rooms:
             flash('No bookable rooms are set up yet. Add a room or change a room from Maintenance in Room Management.', 'error')
     edit=next((r for r in rows if str(r['id'])==request.args.get('edit')),None)
@@ -217,28 +221,32 @@ def guests():
     with connect() as db: rows=db.execute('SELECT g.*,count(b.id) stays FROM guests g LEFT JOIN bookings b ON b.guest_id=g.id WHERE g.name LIKE ? OR g.mobile LIKE ? GROUP BY g.id ORDER BY g.name',('%'+q+'%','%'+q+'%')).fetchall()
     return render_template('guests.html',guests=rows,q=q)
 
-@app.route('/operations',methods=['GET','POST'])
+@app.post('/bookings/<int:bid>/operation')
 @login_required
-def operations():
+def booking_operation(bid):
+    action=request.form.get('action','')
     with connect() as db:
-        if request.method=='POST':
-            bid=int(request.form['booking_id']); action=request.form['action']
-            b=db.execute('SELECT * FROM bookings WHERE id=?',(bid,)).fetchone()
-            if not b: flash('Booking not found.','error')
-            elif action=='checkin' and b['status']=='Reserved':
-                db.execute("UPDATE bookings SET status='Occupied',checked_in=CURRENT_TIMESTAMP WHERE id=?",(bid,)); db.execute("UPDATE rooms SET status='Occupied' WHERE id=?",(b['room_id'],)); db.execute('INSERT INTO checkins(booking_id) VALUES(?)',(bid,)); flash('Guest checked in.','success')
-            elif action=='checkout' and b['status']=='Occupied':
-                checkout_at=datetime.combine(date.fromisoformat(b['checkout']),time(12,0),HOTEL_TIMEZONE)
-                if datetime.now(HOTEL_TIMEZONE)<checkout_at:
-                    flash(f"Checkout is available from 12:00 PM on {b['checkout']} (hotel local time).",'error')
-                else:
-                    db.execute("UPDATE bookings SET status='Checked out',checked_out=CURRENT_TIMESTAMP WHERE id=?",(bid,)); db.execute("UPDATE rooms SET status='Available' WHERE id=?",(b['room_id'],)); db.execute('INSERT INTO checkouts(booking_id,final_bill) VALUES(?,?)',(bid,b['total'])); db.execute('INSERT INTO invoices(booking_id,amount) VALUES(?,?)',(bid,b['total'])); flash('Guest checked out. Invoice is available.','success')
-            else: flash('This booking cannot use that operation.','error')
-            return redirect(url_for('operations'))
-        rows=db.execute("SELECT b.*,g.name guest,g.mobile,r.number room FROM bookings b JOIN guests g ON g.id=b.guest_id JOIN rooms r ON r.id=b.room_id WHERE b.status IN ('Reserved','Occupied') ORDER BY b.checkin").fetchall()
-        now=datetime.now(HOTEL_TIMEZONE)
-        rows=[{**dict(row),'can_checkout':now>=datetime.combine(date.fromisoformat(row['checkout']),time(12,0),HOTEL_TIMEZONE)} for row in rows]
-    return render_template('operations.html',bookings=rows)
+        booking=db.execute('SELECT * FROM bookings WHERE id=?',(bid,)).fetchone()
+        if not booking:
+            flash('Booking not found.','error')
+        elif action=='checkin' and booking['status']=='Reserved':
+            db.execute("UPDATE bookings SET status='Occupied',checked_in=CURRENT_TIMESTAMP WHERE id=?",(bid,))
+            db.execute("UPDATE rooms SET status='Occupied' WHERE id=?",(booking['room_id'],))
+            db.execute('INSERT INTO checkins(booking_id) VALUES(?)',(bid,))
+            flash('Guest checked in.','success')
+        elif action=='checkout' and booking['status']=='Occupied':
+            checkout_at=datetime.combine(date.fromisoformat(booking['checkout']),time(12,0),HOTEL_TIMEZONE)
+            if datetime.now(HOTEL_TIMEZONE)<checkout_at:
+                flash(f"Checkout is available from 12:00 PM on {booking['checkout']} (hotel local time).",'error')
+            else:
+                db.execute("UPDATE bookings SET status='Checked out',checked_out=CURRENT_TIMESTAMP WHERE id=?",(bid,))
+                db.execute("UPDATE rooms SET status='Available' WHERE id=?",(booking['room_id'],))
+                db.execute('INSERT INTO checkouts(booking_id,final_bill) VALUES(?,?)',(bid,booking['total']))
+                db.execute('INSERT INTO invoices(booking_id,amount) VALUES(?,?)',(bid,booking['total']))
+                flash('Guest checked out. Invoice is available.','success')
+        else:
+            flash('This booking cannot use that operation.','error')
+    return redirect(url_for('bookings'))
 
 @app.route('/payments',methods=['GET','POST'])
 @login_required
