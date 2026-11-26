@@ -38,6 +38,8 @@ CREATE TABLE IF NOT EXISTS checkins(id INTEGER PRIMARY KEY, booking_id INTEGER N
 CREATE TABLE IF NOT EXISTS checkouts(id INTEGER PRIMARY KEY, booking_id INTEGER NOT NULL REFERENCES bookings(id), at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, final_bill REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS inventory(id INTEGER PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL, quantity REAL NOT NULL DEFAULT 0, unit TEXT DEFAULT 'pcs', price REAL DEFAULT 0, minimum REAL DEFAULT 0, updated TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS inventory_transactions(id INTEGER PRIMARY KEY, item_id INTEGER NOT NULL REFERENCES inventory(id), change REAL NOT NULL, note TEXT DEFAULT '', at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS booking_charges(id INTEGER PRIMARY KEY, booking_id INTEGER NOT NULL REFERENCES bookings(id), item_id INTEGER REFERENCES inventory(id) ON DELETE SET NULL, item_name TEXT NOT NULL, quantity REAL NOT NULL, unit_price REAL NOT NULL, amount REAL NOT NULL, created TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE INDEX IF NOT EXISTS idx_booking_charges_booking ON booking_charges(booking_id);
 CREATE TABLE IF NOT EXISTS invoices(id INTEGER PRIMARY KEY, booking_id INTEGER NOT NULL REFERENCES bookings(id), amount REAL NOT NULL, created TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS hotel_settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_booking_dates ON bookings(room_id,checkin,checkout,status);
@@ -109,14 +111,16 @@ def dashboard():
         tomorrow_start=datetime.combine(local_today+timedelta(days=1),time.min,HOTEL_TIMEZONE).astimezone(timezone.utc).replace(tzinfo=None).isoformat(sep=' ')
         stats['bookings_today']=db.execute("SELECT count(*) FROM bookings WHERE created>=? AND created<? AND status!='Cancelled'",(today_start,tomorrow_start)).fetchone()[0]
         stats['booked_today']=db.execute("SELECT coalesce(sum(total),0) FROM bookings WHERE created>=? AND created<? AND status!='Cancelled'",(today_start,tomorrow_start)).fetchone()[0]
+        stats['booked_today']+=db.execute('SELECT coalesce(sum(amount),0) FROM booking_charges WHERE created>=? AND created<?',(today_start,tomorrow_start)).fetchone()[0]
         stats['checkins_today']=db.execute('SELECT count(*) FROM checkins WHERE at>=? AND at<?',(today_start,tomorrow_start)).fetchone()[0]
         stats['checkouts_today']=db.execute('SELECT count(*) FROM checkouts WHERE at>=? AND at<?',(today_start,tomorrow_start)).fetchone()[0]
         stats['revenue_today']=db.execute('SELECT coalesce(sum(amount),0) FROM payments WHERE paid_at>=? AND paid_at<?',(today_start,tomorrow_start)).fetchone()[0]
-        stats['pending']=db.execute("SELECT coalesce(sum(b.total-coalesce(p.paid,0)),0) FROM bookings b LEFT JOIN (SELECT booking_id,sum(amount) paid FROM payments GROUP BY booking_id) p ON p.booking_id=b.id WHERE b.status!='Cancelled'").fetchone()[0]
+        stats['pending']=db.execute("SELECT coalesce(sum(b.total+coalesce(c.charges,0)-coalesce(p.paid,0)),0) FROM bookings b LEFT JOIN (SELECT booking_id,sum(amount) paid FROM payments GROUP BY booking_id) p ON p.booking_id=b.id LEFT JOIN (SELECT booking_id,sum(amount) charges FROM booking_charges GROUP BY booking_id) c ON c.booking_id=b.id WHERE b.status!='Cancelled'").fetchone()[0]
         month_start=datetime.combine(local_today.replace(day=1),time.min,HOTEL_TIMEZONE).astimezone(timezone.utc).replace(tzinfo=None).isoformat(sep=' ')
         next_month=(local_today.replace(day=28)+timedelta(days=4)).replace(day=1)
         next_month_start=datetime.combine(next_month,time.min,HOTEL_TIMEZONE).astimezone(timezone.utc).replace(tzinfo=None).isoformat(sep=' ')
         stats['monthly_booked']=db.execute("SELECT coalesce(sum(total),0) FROM bookings WHERE created>=? AND created<? AND status!='Cancelled'",(month_start,next_month_start)).fetchone()[0]
+        stats['monthly_booked']+=db.execute('SELECT coalesce(sum(amount),0) FROM booking_charges WHERE created>=? AND created<?',(month_start,next_month_start)).fetchone()[0]
         month_start_date=local_today.replace(day=1)
         today_cutoff=local_today+timedelta(days=1)
         booked_ranges=db.execute("SELECT checkin,checkout FROM bookings WHERE status!='Cancelled' AND checkin<? AND checkout>?",(today_cutoff.isoformat(),month_start_date.isoformat())).fetchall()
@@ -127,13 +131,14 @@ def dashboard():
             booked_room_nights+=max(0,(range_end-range_start).days)
         stats['average_booked_rooms']=booked_room_nights/local_today.day
         stats['monthly_collected']=db.execute('SELECT coalesce(sum(amount),0) FROM payments WHERE paid_at>=? AND paid_at<?',(month_start,next_month_start)).fetchone()[0]
-        recent=db.execute('SELECT b.*,g.name guest,r.number room FROM bookings b JOIN guests g ON g.id=b.guest_id JOIN rooms r ON r.id=b.room_id ORDER BY b.id DESC LIMIT 8').fetchall()
+        recent=db.execute('SELECT b.*,g.name guest,r.number room,coalesce(c.charges,0) extras FROM bookings b JOIN guests g ON g.id=b.guest_id JOIN rooms r ON r.id=b.room_id LEFT JOIN (SELECT booking_id,sum(amount) charges FROM booking_charges GROUP BY booking_id) c ON c.booking_id=b.id ORDER BY b.id DESC LIMIT 8').fetchall()
         chart=[]
         for offset in range(6,-1,-1):
             day=local_today-timedelta(days=offset)
             start=datetime.combine(day,time.min,HOTEL_TIMEZONE).astimezone(timezone.utc).replace(tzinfo=None).isoformat(sep=' ')
             end=datetime.combine(day+timedelta(days=1),time.min,HOTEL_TIMEZONE).astimezone(timezone.utc).replace(tzinfo=None).isoformat(sep=' ')
             booked=db.execute("SELECT coalesce(sum(total),0) FROM bookings WHERE created>=? AND created<? AND status!='Cancelled'",(start,end)).fetchone()[0]
+            booked+=db.execute('SELECT coalesce(sum(amount),0) FROM booking_charges WHERE created>=? AND created<?',(start,end)).fetchone()[0]
             paid=db.execute('SELECT coalesce(sum(amount),0) FROM payments WHERE paid_at>=? AND paid_at<?',(start,end)).fetchone()[0]
             chart.append({'label':day.strftime('%a'),'booked':float(booked),'paid':float(paid)})
     chart_max=max((max(d['booked'],d['paid']) for d in chart),default=0)
@@ -207,7 +212,7 @@ def bookings():
             except (ValueError,KeyError) as e: flash(str(e) or 'Enter valid booking details.','error')
             return redirect(url_for('bookings'))
         rooms=db.execute("SELECT * FROM rooms WHERE status!='Maintenance' ORDER BY number").fetchall()
-        rows=db.execute('SELECT b.*,g.name guest,g.mobile,g.email,g.address,g.id_proof,r.number room,coalesce((SELECT sum(amount) FROM payments p WHERE p.booking_id=b.id),0) paid FROM bookings b JOIN guests g ON g.id=b.guest_id JOIN rooms r ON r.id=b.room_id ORDER BY b.id DESC').fetchall()
+        rows=db.execute('SELECT b.*,g.name guest,g.mobile,g.email,g.address,g.id_proof,r.number room,coalesce((SELECT sum(amount) FROM payments p WHERE p.booking_id=b.id),0) paid,coalesce((SELECT sum(amount) FROM booking_charges c WHERE c.booking_id=b.id),0) extras FROM bookings b JOIN guests g ON g.id=b.guest_id JOIN rooms r ON r.id=b.room_id ORDER BY b.id DESC').fetchall()
         now=datetime.now(HOTEL_TIMEZONE)
         rows=[{**dict(row),'can_checkout':now>=datetime.combine(date.fromisoformat(row['checkout']),time(12,0),HOTEL_TIMEZONE)} for row in rows]
         if not rooms:
@@ -250,8 +255,10 @@ def booking_operation(bid):
             else:
                 db.execute("UPDATE bookings SET status='Checked out',checked_out=CURRENT_TIMESTAMP WHERE id=?",(bid,))
                 db.execute("UPDATE rooms SET status='Available' WHERE id=?",(booking['room_id'],))
-                db.execute('INSERT INTO checkouts(booking_id,final_bill) VALUES(?,?)',(bid,booking['total']))
-                db.execute('INSERT INTO invoices(booking_id,amount) VALUES(?,?)',(bid,booking['total']))
+                charges=db.execute('SELECT coalesce(sum(amount),0) FROM booking_charges WHERE booking_id=?',(bid,)).fetchone()[0]
+                final_bill=booking['total']+charges
+                db.execute('INSERT INTO checkouts(booking_id,final_bill) VALUES(?,?)',(bid,final_bill))
+                db.execute('INSERT INTO invoices(booking_id,amount) VALUES(?,?)',(bid,final_bill))
                 flash('Guest checked out. Invoice is available.','success')
         else:
             flash('This booking cannot use that operation.','error')
@@ -266,12 +273,13 @@ def payments():
                 bid=int(request.form['booking_id']); amount=float(request.form['amount'])
                 paid=db.execute('SELECT coalesce(sum(amount),0) FROM payments WHERE booking_id=?',(bid,)).fetchone()[0]
                 b=db.execute('SELECT total,status FROM bookings WHERE id=?',(bid,)).fetchone()
-                if not b or b['status']=='Cancelled' or amount<=0 or amount>b['total']-paid: raise ValueError('Payment must be positive and cannot exceed the remaining balance.')
+                extras=db.execute('SELECT coalesce(sum(amount),0) FROM booking_charges WHERE booking_id=?',(bid,)).fetchone()[0]
+                if not b or b['status']=='Cancelled' or amount<=0 or amount>b['total']+extras-paid: raise ValueError('Payment must be positive and cannot exceed the remaining balance.')
                 db.execute('INSERT INTO payments(booking_id,amount,method,note) VALUES(?,?,?,?)',(bid,amount,request.form['method'],request.form.get('note',''))); flash('Payment recorded.','success')
             except (ValueError,KeyError) as e: flash(str(e) or 'Invalid payment.','error')
             return redirect(url_for('payments'))
         history=db.execute('SELECT p.*,g.name guest,r.number room FROM payments p JOIN bookings b ON b.id=p.booking_id JOIN guests g ON g.id=b.guest_id JOIN rooms r ON r.id=b.room_id ORDER BY p.id DESC').fetchall()
-        owing=db.execute("SELECT b.id,b.total,g.name guest,r.number room,b.total-coalesce((SELECT sum(amount) FROM payments WHERE booking_id=b.id),0) due FROM bookings b JOIN guests g ON g.id=b.guest_id JOIN rooms r ON r.id=b.room_id WHERE b.status!='Cancelled' AND b.total>coalesce((SELECT sum(amount) FROM payments WHERE booking_id=b.id),0) ORDER BY b.id DESC").fetchall()
+        owing=db.execute("SELECT b.id,b.total+coalesce(c.charges,0) total,g.name guest,r.number room,b.total+coalesce(c.charges,0)-coalesce(p.paid,0) due FROM bookings b JOIN guests g ON g.id=b.guest_id JOIN rooms r ON r.id=b.room_id LEFT JOIN (SELECT booking_id,sum(amount) charges FROM booking_charges GROUP BY booking_id) c ON c.booking_id=b.id LEFT JOIN (SELECT booking_id,sum(amount) paid FROM payments GROUP BY booking_id) p ON p.booking_id=b.id WHERE b.status!='Cancelled' AND b.total+coalesce(c.charges,0)>coalesce(p.paid,0) ORDER BY b.id DESC").fetchall()
     return render_template('payments.html',history=history,owing=owing)
 
 @app.route('/inventory',methods=['GET','POST'])
@@ -291,8 +299,31 @@ def inventory():
             except (ValueError,KeyError): flash('Enter valid inventory details.','error')
             return redirect(url_for('inventory'))
         rows=db.execute('SELECT * FROM inventory ORDER BY name').fetchall()
+        active_bookings=db.execute("SELECT b.id,g.name guest,r.number room,b.checkin,b.checkout FROM bookings b JOIN guests g ON g.id=b.guest_id JOIN rooms r ON r.id=b.room_id WHERE b.status='Occupied' ORDER BY b.id DESC").fetchall()
+        recent_charges=db.execute('SELECT c.*,g.name guest,r.number room,b.id booking_id FROM booking_charges c JOIN bookings b ON b.id=c.booking_id JOIN guests g ON g.id=b.guest_id JOIN rooms r ON r.id=b.room_id ORDER BY c.id DESC LIMIT 30').fetchall()
     edit=next((r for r in rows if str(r['id'])==request.args.get('edit')),None)
-    return render_template('inventory.html',items=rows,edit=edit)
+    return render_template('inventory.html',items=rows,edit=edit,active_bookings=active_bookings,recent_charges=recent_charges)
+
+@app.post('/inventory/guest-charge')
+@login_required
+def charge_inventory_to_guest():
+    try:
+        booking_id=int(request.form['booking_id']); item_id=int(request.form['item_id']); quantity=float(request.form['quantity'])
+        if quantity<=0: raise ValueError('Quantity must be greater than zero.')
+        with connect() as db:
+            booking=db.execute("SELECT id,status FROM bookings WHERE id=?",(booking_id,)).fetchone()
+            item=db.execute('SELECT * FROM inventory WHERE id=?',(item_id,)).fetchone()
+            if not booking or booking['status']!='Occupied': raise ValueError('Select a guest who is currently checked in.')
+            if not item: raise ValueError('Inventory item not found.')
+            if quantity>item['quantity']: raise ValueError(f"Only {item['quantity']:g} {item['unit']} of {item['name']} are in stock.")
+            unit_price=float(item['price']); amount=quantity*unit_price
+            updated=db.execute('UPDATE inventory SET quantity=quantity-?,updated=CURRENT_TIMESTAMP WHERE id=? AND quantity>=?',(quantity,item_id,quantity))
+            if updated.rowcount!=1: raise ValueError('Stock changed before the charge could be saved. Refresh and try again.')
+            db.execute('INSERT INTO inventory_transactions(item_id,change,note) VALUES(?,?,?)',(item_id,-quantity,f'Charged to booking #{booking_id}'))
+            db.execute('INSERT INTO booking_charges(booking_id,item_id,item_name,quantity,unit_price,amount) VALUES(?,?,?,?,?,?)',(booking_id,item_id,item['name'],quantity,unit_price,amount))
+        flash('Item added to the guest bill and stock updated.','success')
+    except (ValueError,KeyError) as exc: flash(str(exc) or 'Enter valid guest charge details.','error')
+    return redirect(url_for('inventory'))
 
 @app.post('/inventory/<int:iid>/delete')
 @login_required
@@ -307,14 +338,14 @@ def delete_inventory(iid):
 def reports():
     start=request.args.get('start',date.today().replace(day=1).isoformat()); end=request.args.get('end',date.today().isoformat())
     with connect() as db:
-        rows=db.execute("SELECT b.id,g.name guest,r.number room,b.checkin,b.checkout,b.total,b.status,coalesce((SELECT sum(amount) FROM payments WHERE booking_id=b.id),0) paid FROM bookings b JOIN guests g ON g.id=b.guest_id JOIN rooms r ON r.id=b.room_id WHERE date(b.created) BETWEEN date(?) AND date(?) ORDER BY b.id DESC",(start,end)).fetchall()
+        rows=db.execute("SELECT b.id,g.name guest,r.number room,b.checkin,b.checkout,b.total+coalesce((SELECT sum(amount) FROM booking_charges WHERE booking_id=b.id),0) total,b.status,coalesce((SELECT sum(amount) FROM payments WHERE booking_id=b.id),0) paid FROM bookings b JOIN guests g ON g.id=b.guest_id JOIN rooms r ON r.id=b.room_id WHERE date(b.created) BETWEEN date(?) AND date(?) ORDER BY b.id DESC",(start,end)).fetchall()
     return render_template('reports.html',rows=rows,start=start,end=end)
 
 @app.get('/reports.csv')
 @login_required
 def report_csv():
     start=request.args.get('start',date.today().replace(day=1).isoformat()); end=request.args.get('end',date.today().isoformat())
-    with connect() as db: rows=db.execute('SELECT b.id,g.name,r.number,b.checkin,b.checkout,b.total,b.status FROM bookings b JOIN guests g ON g.id=b.guest_id JOIN rooms r ON r.id=b.room_id WHERE date(b.created) BETWEEN date(?) AND date(?)',(start,end)).fetchall()
+    with connect() as db: rows=db.execute('SELECT b.id,g.name,r.number,b.checkin,b.checkout,b.total+coalesce((SELECT sum(amount) FROM booking_charges WHERE booking_id=b.id),0),b.status FROM bookings b JOIN guests g ON g.id=b.guest_id JOIN rooms r ON r.id=b.room_id WHERE date(b.created) BETWEEN date(?) AND date(?)',(start,end)).fetchall()
     output=io.StringIO(); w=csv.writer(output); w.writerow(['Booking','Guest','Room','Check-in','Check-out','Total','Status']); w.writerows([tuple(r) for r in rows])
     return send_file(io.BytesIO(output.getvalue().encode('utf-8-sig')),mimetype='text/csv',as_attachment=True,download_name='hotel-report.csv')
 
@@ -373,12 +404,20 @@ def invoice(bid):
     with connect() as db:
         row=db.execute('SELECT b.*,g.name guest,g.mobile,g.email,r.number room FROM bookings b JOIN guests g ON g.id=b.guest_id JOIN rooms r ON r.id=b.room_id WHERE b.id=?',(bid,)).fetchone()
         payments=db.execute('SELECT coalesce(sum(amount),0) FROM payments WHERE booking_id=?',(bid,)).fetchone()[0]
+        charges=db.execute('SELECT item_name,quantity,unit_price,amount FROM booking_charges WHERE booking_id=? ORDER BY id',(bid,)).fetchall()
         settings=dict(db.execute('SELECT key,value FROM hotel_settings').fetchall())
     if not row: return 'Invoice not found',404
+    bill_total=row['total']+sum(charge['amount'] for charge in charges)
     buf=io.BytesIO(); c=canvas.Canvas(buf,pagesize=A4); width,height=A4
     c.setFillColorRGB(.05,.13,.24); c.rect(0,height-120,width,120,fill=1,stroke=0); c.setFillColorRGB(1,1,1); c.setFont('Helvetica-Bold',22); c.drawString(48,height-58,settings.get('hotel_name','Hotel')); c.setFont('Helvetica',10); c.drawString(48,height-80,settings.get('address','')); c.drawRightString(width-48,height-58,f'INVOICE #{bid:05d}')
     c.setFillColorRGB(.1,.15,.2); y=height-170; c.setFont('Helvetica-Bold',12); c.drawString(48,y,'GUEST'); c.drawString(330,y,'STAY DETAILS'); c.setFont('Helvetica',11); y-=22; c.drawString(48,y,row['guest']); c.drawString(330,y,f"Room {row['room']} · {row['checkin']} to {row['checkout']}"); y-=20; c.drawString(48,y,row['mobile']); c.drawString(330,y,f"{(date.fromisoformat(row['checkout'])-date.fromisoformat(row['checkin'])).days} nights")
-    y-=65; c.setFont('Helvetica-Bold',11); c.drawString(48,y,'Description'); c.drawRightString(width-48,y,'Amount'); y-=12; c.line(48,y,width-48,y); y-=26; c.setFont('Helvetica',11); c.drawString(48,y,'Room charges'); c.drawRightString(width-48,y,f"{settings.get('currency','₹')} {row['total']:,.2f}"); y-=30; c.drawString(48,y,'Payments received'); c.drawRightString(width-48,y,f"{settings.get('currency','₹')} {payments:,.2f}"); y-=36; c.setFont('Helvetica-Bold',14); c.drawString(48,y,'Balance due'); c.drawRightString(width-48,y,f"{settings.get('currency','₹')} {max(0,row['total']-payments):,.2f}"); c.setFont('Helvetica',9); c.drawCentredString(width/2,48,settings.get('invoice_footer','Thank you.')); c.save(); buf.seek(0)
+    y-=65; c.setFont('Helvetica-Bold',11); c.drawString(48,y,'Description'); c.drawRightString(width-48,y,'Amount'); y-=12; c.line(48,y,width-48,y); y-=26; c.setFont('Helvetica',11); c.drawString(48,y,'Room charges'); c.drawRightString(width-48,y,f"{settings.get('currency',chr(8377))} {row['total']:,.2f}"); y-=26
+    for charge in charges:
+        if y<100: c.showPage(); y=height-70; c.setFont('Helvetica',11)
+        description=f"{charge['quantity']:g} x {charge['item_name']}"
+        c.drawString(48,y,description[:60]); c.drawRightString(width-48,y,f"{settings.get('currency',chr(8377))} {charge['amount']:,.2f}"); y-=22
+    if y<95: c.showPage(); y=height-70
+    c.setFont('Helvetica',11); c.drawString(48,y,'Total bill'); c.drawRightString(width-48,y,f"{settings.get('currency',chr(8377))} {bill_total:,.2f}"); y-=28; c.drawString(48,y,'Payments received'); c.drawRightString(width-48,y,f"{settings.get('currency',chr(8377))} {payments:,.2f}"); y-=34; c.setFont('Helvetica-Bold',14); c.drawString(48,y,'Balance due'); c.drawRightString(width-48,y,f"{settings.get('currency',chr(8377))} {max(0,bill_total-payments):,.2f}"); c.setFont('Helvetica',9); c.drawCentredString(width/2,48,settings.get('invoice_footer','Thank you.')); c.save(); buf.seek(0)
     return send_file(buf,mimetype='application/pdf',as_attachment=True,download_name=f'invoice-{bid:05d}.pdf')
 
 @app.errorhandler(413)
