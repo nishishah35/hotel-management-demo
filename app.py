@@ -6,7 +6,7 @@ import sqlite3
 from datetime import date, datetime, time, timedelta, timezone
 from functools import wraps
 from pathlib import Path
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from flask import Flask, flash, g, redirect, render_template, request, send_file, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -18,7 +18,14 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('HOTEL_SECRET_KEY', 'change-this-local-secret')
 app.config['MAX_CONTENT_LENGTH'] = 8 * 1024 * 1024
 app.config['TEMPLATES_AUTO_RELOAD'] = True
-HOTEL_TIMEZONE = ZoneInfo(os.environ.get('HOTEL_TIMEZONE', 'Asia/Kolkata'))
+HOTEL_TIMEZONE_NAME = os.environ.get('HOTEL_TIMEZONE', 'Asia/Kolkata')
+try:
+    HOTEL_TIMEZONE = ZoneInfo(HOTEL_TIMEZONE_NAME)
+except ZoneInfoNotFoundError:
+    if HOTEL_TIMEZONE_NAME != 'Asia/Kolkata':
+        raise
+    # Windows Python may not ship an IANA database; Kolkata is fixed UTC+05:30.
+    HOTEL_TIMEZONE = timezone(timedelta(hours=5, minutes=30), name='Asia/Kolkata')
 
 SCHEMA = '''
 PRAGMA foreign_keys=ON;
