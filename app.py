@@ -210,10 +210,16 @@ def operations():
             elif action=='checkin' and b['status']=='Reserved':
                 db.execute("UPDATE bookings SET status='Occupied',checked_in=CURRENT_TIMESTAMP WHERE id=?",(bid,)); db.execute("UPDATE rooms SET status='Occupied' WHERE id=?",(b['room_id'],)); db.execute('INSERT INTO checkins(booking_id) VALUES(?)',(bid,)); flash('Guest checked in.','success')
             elif action=='checkout' and b['status']=='Occupied':
-                db.execute("UPDATE bookings SET status='Checked out',checked_out=CURRENT_TIMESTAMP WHERE id=?",(bid,)); db.execute("UPDATE rooms SET status='Available' WHERE id=?",(b['room_id'],)); db.execute('INSERT INTO checkouts(booking_id,final_bill) VALUES(?,?)',(bid,b['total'])); db.execute('INSERT INTO invoices(booking_id,amount) VALUES(?,?)',(bid,b['total'])); flash('Guest checked out. Invoice is available.','success')
+                checkout_at=datetime.combine(date.fromisoformat(b['checkout']),time(12,0),HOTEL_TIMEZONE)
+                if datetime.now(HOTEL_TIMEZONE)<checkout_at:
+                    flash(f"Checkout is available from 12:00 PM on {b['checkout']} (hotel local time).",'error')
+                else:
+                    db.execute("UPDATE bookings SET status='Checked out',checked_out=CURRENT_TIMESTAMP WHERE id=?",(bid,)); db.execute("UPDATE rooms SET status='Available' WHERE id=?",(b['room_id'],)); db.execute('INSERT INTO checkouts(booking_id,final_bill) VALUES(?,?)',(bid,b['total'])); db.execute('INSERT INTO invoices(booking_id,amount) VALUES(?,?)',(bid,b['total'])); flash('Guest checked out. Invoice is available.','success')
             else: flash('This booking cannot use that operation.','error')
             return redirect(url_for('operations'))
         rows=db.execute("SELECT b.*,g.name guest,g.mobile,r.number room FROM bookings b JOIN guests g ON g.id=b.guest_id JOIN rooms r ON r.id=b.room_id WHERE b.status IN ('Reserved','Occupied') ORDER BY b.checkin").fetchall()
+        now=datetime.now(HOTEL_TIMEZONE)
+        rows=[{**dict(row),'can_checkout':now>=datetime.combine(date.fromisoformat(row['checkout']),time(12,0),HOTEL_TIMEZONE)} for row in rows]
     return render_template('operations.html',bookings=rows)
 
 @app.route('/payments',methods=['GET','POST'])
