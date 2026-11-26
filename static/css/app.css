@@ -287,3 +287,133 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 @media (prefers-reduced-motion: reduce) {
   *, *:before, *:after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; }
 }
+
+/* Evergreen and champagne hotel theme */
+:root {
+  --navy: #0b1713;
+  --navy2: #13231b;
+  --canvas: #0d1914;
+  --surface: #17271e;
+  --surface-raised: #20352a;
+  --ink: #f4f0e4;
+  --muted: #b8c3b7;
+  --line: #34493a;
+  --blue: #a8d7bd;
+  --teal: #d7b66e;
+  --green: #8bd0a0;
+  --amber: #e6bd70;
+  --red: #ff9383;
+}
+body {
+  background:
+    radial-gradient(ellipse at 84% -12%, #365637 0, #1b3429 18%, transparent 42%),
+    var(--canvas);
+}
+.sidebar {
+  background: linear-gradient(180deg, #0b1713 0%, #102119 100%);
+  border-right-color: #2a4032;
+}
+.brandmark {
+  background: linear-gradient(140deg, #e2c77e, #a57c3d);
+  color: #152016;
+  border-color: #f0d99788;
+  box-shadow: 0 7px 22px #d7b66e32;
+}
+.navlink { color: #bdcbbf; }
+.navlink:hover { background: #1b3024; }
+.navlink.active {
+  color: #fff8e8;
+  background: linear-gradient(90deg, #233c2b, #1c3327);
+  box-shadow: inset 3px 0 #e1c276, 0 5px 16px #030b1528;
+}
+.topbar {
+  background: #122119ed;
+  border-bottom-color: #34493a;
+}
+.eyebrow { color: #c7b57f; }
+.live { border-color: #405344; color: #c5d1c5; }
+.live i { background: #83d39d; box-shadow: 0 0 10px #83d39d66; }
+.stat-card, .mini-stat, .panel {
+  border-color: #354b3a;
+  background: linear-gradient(145deg, #1b3024 0%, #14241b 76%);
+  box-shadow: 0 10px 28px #030a052e;
+}
+.stat-card:after {
+  background: linear-gradient(90deg, #e2c477, #9bcba5 60%, transparent);
+  opacity: .8;
+}
+.stat-card:hover, .mini-stat:hover { border-color: #63744c; }
+.stat-top, .panel-head p, .mini-stat span { color: #c4cebd; }
+.stat-card > small { color: #aebdac; }
+.stat-icon { background: #294332; }
+.blue { color: #a6dfc1; }
+.green { color: #91d5a3; }
+.purple { color: #e7d19c; }
+.amber { color: #f0c978; }
+.button {
+  border-color: #485947;
+  background: #24362a;
+  color: #f1f2e6;
+}
+.button:hover { background: #304835; }
+.button.primary {
+  color: #1a2118;
+  background: linear-gradient(135deg, #e2c77e, #c59d55);
+  border-color: #edd48f;
+  box-shadow: 0 7px 20px #c5a25335;
+}
+.button.primary:hover { background: linear-gradient(135deg, #edda9a, #d2ad65); }
+.button.dark { background: #2c4032; }
+.text-link { color: #d9c27f; }
+.text-link:hover { color: #f0d997; }
+.pill.teal { background: #234333; color: #a7e1bd; }
+.chart-y { color: #bac9ba; }
+.bars {
+  border-bottom-color: #52624b;
+  background: repeating-linear-gradient(to bottom, transparent 0, transparent 42px, #364a384d 43px);
+}
+.bar.booked { background: linear-gradient(180deg, #f0d48b, #b98d48); }
+.bar.collected { background: linear-gradient(180deg, #88d7b0, #3e9b72); }
+.chart-legend { color: #c1cebe; }
+.legend-booked { background: #e2c477; }
+.legend-collected { background: #78cfa3; }
+.chart-foot { border-top-color: #34493a; color: #c0cdbd; }
+.chart-foot b { color: #f4f0e4; }
+.room-chip {
+  border-color: #354d3a;
+  background: linear-gradient(145deg, #223a2b, #192e22);
+}
+.status.available { color: #91d7a5; }
+.status.reserved { color: #e9c978; }
+.status.occupied { color: #a6dcc0; }
+.status.maintenance, .status.cancelled { color: #ff9a89; }
+th { color: #c2cebd; border-bottom-color: #3a4d3b; }
+td { border-bottom-color: #2d4233; color: #d0d8cb; }
+tbody tr:hover { background: #d5e2cf09; }
+.form-grid input, .form-grid select, .form-grid textarea, .search input,
+.login-card input, .signin-form input {
+  border-color: #455a47;
+  background: #101f17;
+  color: #f4f0e4;
+}
+.form-grid input:focus, .form-grid select:focus, .form-grid textarea:focus,
+.search input:focus, .signin-form input:focus {
+  border-color: #d4b76d;
+  box-shadow: 0 0 0 3px #d7b66e24;
+}
+.login-page {
+  background: radial-gradient(ellipse at 12% 10%, #31533b 0, #15281e 45%, #0b1713 100%);
+}
+.login-shell { background: #17271e; border-color: #455843; }
+.login-visual { background: linear-gradient(155deg, #25432e 0%, #183324 55%, #11251b 100%); }
+.login-brand .brandmark { background: linear-gradient(140deg, #e2c77e, #a57c3d); color: #152016; }
+.visual-copy h1 em, .lock-mark { color: #e1c276; }
+.login-form-panel { background: linear-gradient(145deg, #203629, #17281f 75%); }
+.signin-form .wide { color: #1a2118; }
+.signin-form input:focus { border-color: #d4b76d; box-shadow: 0 0 0 3px #d7b66e24; }
+button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+  outline-color: #e2c77e;
+}
+@media (max-width: 760px) {
+  .topbar { background: #122119f2; }
+}
