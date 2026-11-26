@@ -379,7 +379,7 @@ def report_csv():
 def settings():
     with connect() as db:
         if request.method=='POST':
-            for k in ['address','phone','email','currency','tax','invoice_footer']: db.execute('INSERT INTO hotel_settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',(k,request.form.get(k,'')))
+            for k in ['address','phone','email','gstin','pan','currency','tax','invoice_footer']: db.execute('INSERT INTO hotel_settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',(k,request.form.get(k,'')))
             new=request.form.get('new_password','')
             if new:
                 if len(new)<8: flash('New password must contain at least 8 characters.','error'); return redirect(url_for('settings'))
@@ -424,116 +424,205 @@ def restore_backup():
 @app.get('/invoice/<int:bid>')
 @login_required
 def invoice(bid):
+    from reportlab.lib.colors import HexColor
     from reportlab.lib.pagesizes import A4
     from reportlab.pdfgen import canvas
+
     with connect() as db:
-        row=db.execute('SELECT b.*,g.name guest,g.mobile,g.email,r.number room,r.type room_type FROM bookings b JOIN guests g ON g.id=b.guest_id JOIN rooms r ON r.id=b.room_id WHERE b.id=?',(bid,)).fetchone()
+        row=db.execute('SELECT b.*,g.name guest,g.mobile,g.email,g.address guest_address,g.id_proof,r.number room,r.type room_type,r.price room_price FROM bookings b JOIN guests g ON g.id=b.guest_id JOIN rooms r ON r.id=b.room_id WHERE b.id=?',(bid,)).fetchone()
         payments=db.execute('SELECT coalesce(sum(amount),0) FROM payments WHERE booking_id=?',(bid,)).fetchone()[0]
         charges=db.execute('SELECT item_name,quantity,unit_price,amount FROM booking_charges WHERE booking_id=? ORDER BY id',(bid,)).fetchall()
         settings=dict(db.execute('SELECT key,value FROM hotel_settings').fetchall())
     if not row: return 'Bill not found',404
 
-    nights=max(1,(date.fromisoformat(row['checkout'])-date.fromisoformat(row['checkin'])).days)
-    discount=float(row['discount'] or 0)
-    room_subtotal=float(row['total'])+discount
-    extras_total=sum(float(charge['amount']) for charge in charges)
-    subtotal=room_subtotal+extras_total
-    taxable=subtotal-discount
+    checkin_date=date.fromisoformat(row['checkin'])
+    checkout_date=date.fromisoformat(row['checkout'])
+    nights=max(1,(checkout_date-checkin_date).days)
+    discount=round(float(row['discount'] or 0),2)
+    room_subtotal=round(float(row['total'])+discount,2)
+    extras_total=round(sum(float(charge['amount']) for charge in charges),2)
+    subtotal=round(room_subtotal+extras_total,2)
+    taxable=round(subtotal-discount,2)
     tax_rate=float(row['tax_rate'] or 0)
     tax=round(taxable*tax_rate/100,2)
-    bill_total=round(taxable+tax,2)
+    raw_total=taxable+tax
+    bill_total=round(raw_total,2)
+    roundoff=round(bill_total-raw_total,2)
     room_rate=room_subtotal/nights
-    currency=settings.get('currency',chr(8377))
-    if currency==chr(8377): currency='INR'
+    invoice_date=datetime.now(HOTEL_TIMEZONE).date()
+    fy_start=invoice_date.year if invoice_date.month>=4 else invoice_date.year-1
+    invoice_number=f'{bid:04d}/{str(fy_start)[-2:]}-{str(fy_start+1)[-2:]}'
+    currency=settings.get('currency',chr(8377)) or 'INR'
+    if currency==chr(8377): currency='Rs.'
+
+    def under_thousand(number):
+        ones=['Zero','One','Two','Three','Four','Five','Six','Seven','Eight','Nine','Ten','Eleven','Twelve','Thirteen','Fourteen','Fifteen','Sixteen','Seventeen','Eighteen','Nineteen']
+        tens=['','','Twenty','Thirty','Forty','Fifty','Sixty','Seventy','Eighty','Ninety']
+        parts=[]
+        if number>=100:
+            parts.extend([ones[number//100],'Hundred']); number%=100
+        if number>=20:
+            parts.append(tens[number//10]); number%=10
+        if number:
+            parts.append(ones[number])
+        return ' '.join(parts)
+
+    def amount_in_words(amount):
+        rupees=int(amount)
+        paise=int(round((amount-rupees)*100))
+        if paise==100: rupees+=1; paise=0
+        groups=[]
+        for divisor,label in ((10000000,'Crore'),(100000,'Lakh'),(1000,'Thousand')):
+            count,rupees=divmod(rupees,divisor)
+            if count: groups.extend([under_thousand(count),label])
+        if rupees or not groups: groups.append(under_thousand(rupees))
+        result='Rupees '+' '.join(groups)
+        if paise: result+=' and '+under_thousand(paise)+' Paise'
+        return result+' Only'
+
     width,height=A4
-    left,right=48,width-48
+    left,right=34,width-34
+    table_width=right-left
+    col_widths=[44,90,44,55,55,42,58,44,95]
+    x_positions=[left]
+    for col_width in col_widths: x_positions.append(x_positions[-1]+col_width)
+    line_color=HexColor('#777777')
+    peach=HexColor('#F4D3B4')
+    blue=HexColor('#B8DFEA')
+    green=HexColor('#E8F0D9')
+    total_blue=HexColor('#9ED5E0')
+    lavender=HexColor('#E4DCEF')
+    pale=HexColor('#F5F7F8')
+    ink=HexColor('#20252A')
+    muted=HexColor('#59636D')
+    currency_text=lambda value:f'{currency} {value:,.2f}'
     buf=io.BytesIO()
     c=canvas.Canvas(buf,pagesize=A4)
-    navy=(.04,.25,.51); pale=(.91,.95,.98); ink=(.17,.21,.26); muted=(.39,.44,.50)
 
-    c.setFillColorRGB(*navy)
-    c.setFont('Helvetica',25)
-    c.drawCentredString(width/2,height-58,settings.get('hotel_name','Hotel'))
-    contact='  |  '.join(value for value in [settings.get('address',''),settings.get('phone',''),settings.get('email','')] if value)
-    c.setFillColorRGB(*muted); c.setFont('Helvetica',9)
-    if contact: c.drawCentredString(width/2,height-82,contact[:110])
-    c.setStrokeColorRGB(.70,.80,.89); c.setLineWidth(2); c.line(left,height-101,right,height-101)
+    def draw_company_header(page_number):
+        top=height-30
+        c.setFillColor(peach); c.setStrokeColor(line_color)
+        c.rect(left,top-24,table_width,24,fill=1,stroke=1)
+        c.setFillColor(ink); c.setFont('Helvetica',9)
+        c.drawString(left+7,top-16,f'Page No. {page_number}')
+        c.setFont('Helvetica-Bold',13); c.drawCentredString(width/2,top-16,'Hotel Bill')
+        c.setFont('Helvetica',9); c.drawRightString(right-7,top-16,'Original Copy')
 
-    c.setFillColorRGB(*navy); c.setFont('Helvetica-Bold',11)
-    c.drawString(left,height-132,'BOOKING DETAILS')
-    c.setFont('Helvetica-Bold',23); c.drawRightString(right,height-139,'HOTEL BILL')
-    c.setFillColorRGB(*ink); c.setFont('Helvetica',10)
-    checkin=date.fromisoformat(row['checkin']).strftime('%A, %B %d, %Y')
-    checkout=date.fromisoformat(row['checkout']).strftime('%A, %B %d, %Y')
-    adults=row['adults'] or 0; children=row['children'] or 0
-    detail_rows=[('Check in',checkin),('Check-out',checkout),('Guests',f'{adults} adult(s), {children} child(ren)'),('Unit',f"{row['room_type']} - Room {row['room']}")]
-    y=height-155
-    for label,value in detail_rows:
-        c.setFillColorRGB(*muted); c.drawString(left,y,label)
-        c.setFillColorRGB(*ink); c.drawString(left+108,y,value[:55]); y-=19
+        box_top=top-24; box_bottom=box_top-88; logo_width=92
+        c.setFillColor(HexColor('#FFFFFF')); c.rect(left,box_bottom,table_width,88,fill=1,stroke=1)
+        c.line(left+logo_width,box_bottom,left+logo_width,box_top)
+        c.setFillColor(blue); c.circle(left+logo_width/2,(box_top+box_bottom)/2,20,fill=1,stroke=0)
+        initials=''.join(word[0] for word in settings.get('hotel_name','Hotel').split() if word)[:3].upper()
+        c.setFillColor(ink); c.setFont('Helvetica-Bold',12); c.drawCentredString(left+logo_width/2,(box_top+box_bottom)/2-4,initials or 'H')
+        tx=left+logo_width+9; ty=box_top-15
+        c.setFillColor(ink); c.setFont('Helvetica-Bold',10)
+        c.drawString(tx,ty,f"Hotel Name - {settings.get('hotel_name','Hotel')[:65]}")
+        c.setFont('Helvetica',9); ty-=15
+        c.drawString(tx,ty,f"Address - {settings.get('address','')[:75] or '-'}"); ty-=14
+        c.drawString(tx,ty,f"Mobile - {settings.get('phone','-') or '-'} | Email - {settings.get('email','-') or '-'}"); ty-=14
+        c.drawString(tx,ty,f"GSTIN - {settings.get('gstin','-') or '-'} | PAN - {settings.get('pan','-') or '-'}")
+        return box_bottom
 
-    y-=14
-    c.setFillColorRGB(*navy); c.setFont('Helvetica-Bold',10)
-    c.drawString(left,y,'BOOKED BY')
-    c.drawString(width/2+12,y,'BOOKING #')
-    c.drawRightString(right,y,'BOOKING DATE')
-    y-=18; c.setFillColorRGB(*ink); c.setFont('Helvetica',10)
-    c.drawString(left,y,row['guest'][:42])
-    c.drawString(width/2+12,y,f"{bid:07d}")
-    c.drawRightString(right,y,(row['created'] or '')[:10])
-    y-=17
-    c.setFillColorRGB(*muted); c.setFont('Helvetica',9)
-    c.drawString(left,y,row['mobile'] or '')
-    c.drawRightString(right,y,f"Status: {row['status']}")
-    y-=30
+    def draw_table_header(top):
+        row_height=27; bottom=top-row_height
+        c.setFillColor(green); c.setStrokeColor(line_color)
+        c.rect(left,bottom,table_width,row_height,fill=1,stroke=1)
+        headers=['Room No','Name / Item','HSN/SAC','Check In','Check Out','Days / Qty','Price/Day','Tax %','Amount']
+        c.setFillColor(ink); c.setFont('Helvetica-Bold',7.2)
+        for index,label in enumerate(headers):
+            x1=x_positions[index]; x2=x_positions[index+1]
+            if index: c.line(x1,bottom,x1,top)
+            c.drawCentredString((x1+x2)/2,bottom+10,label)
+        return bottom
 
-    def draw_table_header(ypos):
-        c.setFillColorRGB(*navy); c.rect(left,ypos-21,right-left,24,fill=1,stroke=0)
-        c.setFillColorRGB(1,1,1); c.setFont('Helvetica-Bold',9)
-        c.drawString(left+9,ypos-13,'QUANTITY')
-        c.drawString(left+92,ypos-13,'DESCRIPTION')
-        c.drawRightString(right-104,ypos-13,'UNIT PRICE')
-        c.drawRightString(right-9,ypos-13,'AMOUNT')
-    draw_table_header(y); y-=37
+    current_top=draw_company_header(1)
+    detail_top=current_top
+    detail_bottom=detail_top-144
+    split=left+table_width*.60
+    c.setFillColor(blue); c.setStrokeColor(line_color)
+    c.rect(left,detail_bottom,table_width,144,fill=1,stroke=1)
+    c.line(split,detail_bottom,split,detail_top)
+    c.setFillColor(ink); c.setFont('Helvetica-Bold',10)
+    c.drawString(left+8,detail_top-16,'Billing Details')
+    c.drawString(split+8,detail_top-16,'Invoice Number -')
+    c.setFont('Helvetica-Bold',9)
+    c.drawRightString(right-8,detail_top-16,invoice_number)
+    guest_lines=[('Name',row['guest']),('Address',row['guest_address'] or '-'),('Phone No',row['mobile'] or '-'),('Email ID',row['email'] or '-'),('ID Proof',row['id_proof'] or '-')]
+    y=detail_top-37
+    c.setFont('Helvetica',8.5)
+    for label,value in guest_lines:
+        c.drawString(left+8,y,f'{label} - {str(value)[:56]}'); y-=17
+    invoice_meta=[('Invoice Date',invoice_date.strftime('%d-%m-%Y')),('Due date',checkout_date.strftime('%d-%m-%Y')),('Booking Status',row['status'])]
+    y=detail_top-43
+    for label,value in invoice_meta:
+        c.setFont('Helvetica-Bold',8.5); c.drawString(split+8,y,f'{label} -')
+        c.setFont('Helvetica',8.5); c.drawString(split+100,y,str(value)[:28]); y-=27
 
-    bill_lines=[(f'{nights:.2f}',f'Nights in Room {row["room"]}',room_rate,room_subtotal)]
-    bill_lines.extend((f'{charge["quantity"]:.2f}',charge['item_name'],float(charge['unit_price']),float(charge['amount'])) for charge in charges)
-    for quantity,description,unit_price,amount in bill_lines:
-        if y<120:
-            c.showPage(); y=height-58; draw_table_header(y); y-=37
-        c.setFillColorRGB(*ink); c.setFont('Helvetica',9)
-        c.drawString(left+9,y,str(quantity))
-        c.drawString(left+92,y,str(description)[:42])
-        c.drawRightString(right-104,y,f'{currency} {unit_price:,.2f}')
-        c.drawRightString(right-9,y,f'{currency} {amount:,.2f}')
-        c.setStrokeColorRGB(.84,.87,.90); c.setLineWidth(.5); c.line(left,y-8,right,y-8)
-        y-=25
+    table_top=detail_bottom
+    y=draw_table_header(table_top)-1
+    checkin_text=checkin_date.strftime('%d-%m-%Y')
+    checkout_text=checkout_date.strftime('%d-%m-%Y')
+    bill_lines=[(row['room'],f'Room stay - {row["room_type"]}', '-',checkin_text,checkout_text,f'{nights:g}',currency_text(room_rate),f'{tax_rate:.2f}',currency_text(room_subtotal))]
+    bill_lines.extend(('-',charge['item_name'],'-','-','-',f'{charge["quantity"]:g}',currency_text(float(charge['unit_price'])),f'{tax_rate:.2f}',currency_text(float(charge['amount']))) for charge in charges)
 
-    if y<200:
-        c.showPage(); y=height-70
-    summary_x=width/2+58
-    def summary_row(label,value,bold=False,fill=None):
-        nonlocal_y[0]-=22
-        if fill:
-            c.setFillColorRGB(*fill); c.rect(summary_x-10,nonlocal_y[0]-7,right-summary_x+10,24,fill=1,stroke=0)
-        c.setFillColorRGB(*(navy if bold else ink))
-        c.setFont('Helvetica-Bold' if bold else 'Helvetica',10 if not bold else 11)
-        c.drawString(summary_x,nonlocal_y[0],label)
-        c.drawRightString(right-9,nonlocal_y[0],value)
-    nonlocal_y=[y]
-    summary_row('Subtotal',f'{currency} {subtotal:,.2f}')
-    if discount:
-        summary_row('Repeat guest discount (5%)',f'- {currency} {discount:,.2f}')
-    summary_row(f'Tax ({tax_rate:g}%)',f'{currency} {tax:,.2f}')
-    summary_row('TOTAL',f'{currency} {bill_total:,.2f}',True,pale)
-    summary_row('Payments received',f'{currency} {payments:,.2f}')
-    summary_row('BALANCE DUE',f'{currency} {max(0,bill_total-payments):,.2f}',True)
+    def draw_bill_rows(lines,start_y,page_number):
+        y=start_y
+        for row_index,line in enumerate(lines):
+            row_height=27; bottom=y-row_height
+            if bottom<110:
+                c.showPage(); page_number+=1; header_bottom=draw_company_header(page_number)
+                y=header_bottom-18; y=draw_table_header(y)-1; bottom=y-row_height
+            c.setFillColor(HexColor('#FFFFFF') if row_index%2==0 else pale)
+            c.setStrokeColor(line_color); c.rect(left,bottom,table_width,row_height,fill=1,stroke=1)
+            c.setFillColor(ink); c.setFont('Helvetica',7.2)
+            for index,value in enumerate(line):
+                x1=x_positions[index]; x2=x_positions[index+1]
+                if index: c.line(x1,bottom,x1,bottom+row_height)
+                display=str(value)
+                max_chars=max(5,int((x2-x1)/4.1))
+                if index in (6,8): c.drawRightString(x2-3,bottom+10,display[:max_chars])
+                else: c.drawCentredString((x1+x2)/2,bottom+10,display[:max_chars])
+            y=bottom
+        return y,page_number
 
-    y=nonlocal_y[0]-34
-    c.setFillColorRGB(*navy); c.setFont('Helvetica-Bold',10); c.drawString(left,y,'ADDITIONAL INFORMATION')
-    c.setFillColorRGB(*muted); c.setFont('Helvetica',9)
-    c.drawString(left,y-19,'Check-out is available from 12:00 PM on the scheduled check-out date.')
-    c.drawCentredString(width/2,38,settings.get('invoice_footer','Thank you for staying with us.'))
+    y,page_number=draw_bill_rows(bill_lines,y,1)
+    if y<245:
+        c.showPage(); page_number+=1; y=draw_company_header(page_number)-18
+    summary_top=y
+    summary_x=left+table_width*.56
+    summary_rows=[('Subtotal',currency_text(subtotal))]
+    if discount>0: summary_rows.append(('Discount - Returning Guest (5%)',f'- {currency_text(discount)}'))
+    summary_rows.extend([(f'Tax ({tax_rate:g}%)',currency_text(tax)),('Rounded Off (+)',f'+ {currency_text(roundoff)[len(currency)+1:]}'),('Total',currency_text(bill_total))])
+    summary_height=22
+    for label,value in summary_rows:
+        bottom=summary_top-summary_height
+        c.setFillColor(total_blue if label=='Total' else HexColor('#FFFFFF'))
+        c.setStrokeColor(line_color); c.rect(summary_x,bottom,right-summary_x,summary_height,fill=1,stroke=1)
+        c.setFillColor(ink); c.setFont('Helvetica-Bold' if label=='Total' else 'Helvetica',9)
+        c.drawString(summary_x+7,bottom+7,label[:34]); c.drawRightString(right-7,bottom+7,value)
+        summary_top=bottom
+    words_y=summary_top-18
+    c.setFillColor(ink); c.setFont('Helvetica-Bold',8.5)
+    c.drawString(left+3,words_y,f'In Words - {amount_in_words(bill_total)[:85]}')
+
+    note_top=words_y-15
+    if note_top<142:
+        c.showPage(); page_number+=1; draw_company_header(page_number); note_top=height-105
+    note_bottom=92; signature_split=left+table_width*.49; signature_mid=signature_split+(right-signature_split)/2
+    c.setFillColor(HexColor('#FFFFFF')); c.setStrokeColor(line_color)
+    c.rect(left,note_bottom,table_width,note_top-note_bottom,fill=1,stroke=1)
+    c.line(signature_split,note_bottom,signature_split,note_top)
+    c.line(signature_mid,note_bottom,signature_mid,note_top)
+    c.setFillColor(ink); c.setFont('Helvetica-Bold',8.5); c.drawString(left+5,note_top-14,'Please Note -')
+    c.setFont('Helvetica',8)
+    c.drawString(left+8,note_top-32,'1. Check-out is available from 12:00 PM on the scheduled date.')
+    c.drawString(left+8,note_top-47,'2. Please verify the listed room and guest item charges.')
+    c.setFont('Helvetica',8); c.drawCentredString((signature_split+signature_mid)/2,note_top-15,'Billing Officer Signature')
+    c.drawCentredString((signature_mid+right)/2,note_top-15,"Guest's Signature")
+    footer_y=43
+    c.setFillColor(lavender); c.setStrokeColor(line_color); c.rect(left,footer_y,table_width,24,fill=1,stroke=1)
+    c.setFillColor(ink); c.setFont('Helvetica-Bold',8.5)
+    c.drawCentredString(width/2,footer_y+8,settings.get('invoice_footer','Thank you for staying with us.')[:110])
     c.save(); buf.seek(0)
     return send_file(buf,mimetype='application/pdf',as_attachment=True,download_name=f'hotel-bill-{bid:07d}.pdf')
 
