@@ -92,10 +92,19 @@ def logout(): session.clear(); return redirect(url_for('login'))
 @login_required
 def dashboard():
     with connect() as db:
-        rooms=db.execute('SELECT * FROM rooms ORDER BY number').fetchall()
-        stats={r['status'].lower():r['n'] for r in db.execute('SELECT status,count(*) n FROM rooms GROUP BY status')}
-        stats['total_rooms']=sum(stats.values())
         local_today=datetime.now(HOTEL_TIMEZONE).date()
+        today_text=local_today.isoformat()
+        room_status_sql="""CASE
+            WHEN r.status='Maintenance' THEN 'Maintenance'
+            WHEN r.status='Occupied' THEN 'Occupied'
+            WHEN r.status='Reserved' OR EXISTS(
+                SELECT 1 FROM bookings b
+                WHERE b.room_id=r.id AND b.status='Reserved' AND b.checkout>=?
+            ) THEN 'Reserved'
+            ELSE 'Available' END"""
+        rooms=db.execute(f'SELECT r.*, {room_status_sql} AS display_status FROM rooms r ORDER BY r.number',(today_text,)).fetchall()
+        stats={r['status'].lower():r['n'] for r in db.execute(f'SELECT display_status AS status,COUNT(*) AS n FROM (SELECT {room_status_sql} AS display_status FROM rooms r) GROUP BY display_status',(today_text,today_text)).fetchall()}
+        stats['total_rooms']=sum(stats.values())
         today_start=datetime.combine(local_today,time.min,HOTEL_TIMEZONE).astimezone(timezone.utc).replace(tzinfo=None).isoformat(sep=' ')
         tomorrow_start=datetime.combine(local_today+timedelta(days=1),time.min,HOTEL_TIMEZONE).astimezone(timezone.utc).replace(tzinfo=None).isoformat(sep=' ')
         stats['bookings_today']=db.execute("SELECT count(*) FROM bookings WHERE created>=? AND created<? AND status!='Cancelled'",(today_start,tomorrow_start)).fetchone()[0]
@@ -133,7 +142,16 @@ def rooms_page():
             except sqlite3.IntegrityError: flash('Room number already exists.','error')
             except (ValueError,KeyError): flash('Enter valid room details.','error')
             return redirect(url_for('rooms_page'))
-        allrooms=db.execute('SELECT * FROM rooms ORDER BY number').fetchall()
+        local_today=datetime.now(HOTEL_TIMEZONE).date().isoformat()
+        allrooms=db.execute("""SELECT r.*,CASE
+            WHEN r.status='Maintenance' THEN 'Maintenance'
+            WHEN r.status='Occupied' THEN 'Occupied'
+            WHEN r.status='Reserved' OR EXISTS(
+                SELECT 1 FROM bookings b
+                WHERE b.room_id=r.id AND b.status='Reserved' AND b.checkout>=?
+            ) THEN 'Reserved'
+            ELSE 'Available' END AS display_status
+            FROM rooms r ORDER BY r.number""",(local_today,)).fetchall()
     edit=next((r for r in allrooms if str(r['id'])==request.args.get('edit')),None)
     return render_template('rooms.html',rooms=allrooms,edit=edit)
 
