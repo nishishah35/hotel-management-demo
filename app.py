@@ -3,9 +3,10 @@ import io
 import os
 import shutil
 import sqlite3
-from datetime import date, datetime
+from datetime import date, datetime, time, timedelta, timezone
 from functools import wraps
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from flask import Flask, flash, g, redirect, render_template, request, send_file, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -17,6 +18,7 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('HOTEL_SECRET_KEY', 'change-this-local-secret')
 app.config['MAX_CONTENT_LENGTH'] = 8 * 1024 * 1024
 app.config['TEMPLATES_AUTO_RELOAD'] = True
+HOTEL_TIMEZONE = ZoneInfo(os.environ.get('HOTEL_TIMEZONE', 'Asia/Kolkata'))
 
 SCHEMA = '''
 PRAGMA foreign_keys=ON;
@@ -65,7 +67,7 @@ def login_required(fn):
     return wrapper
 
 @app.context_processor
-def inject(): return {'hotel': getattr(g,'hotel',{}), 'today':date.today().isoformat()}
+def inject(): return {'hotel': getattr(g,'hotel',{}), 'today':datetime.now(HOTEL_TIMEZONE).date().isoformat()}
 
 @app.route('/login', methods=['GET','POST'])
 def login():
@@ -86,15 +88,29 @@ def dashboard():
         rooms=db.execute('SELECT * FROM rooms ORDER BY number').fetchall()
         stats={r['status'].lower():r['n'] for r in db.execute('SELECT status,count(*) n FROM rooms GROUP BY status')}
         stats['total_rooms']=sum(stats.values())
-        stats['bookings_today']=db.execute('SELECT count(*) FROM bookings WHERE date(created)=date(?)',(date.today().isoformat(),)).fetchone()[0]
-        stats['checkins_today']=db.execute('SELECT count(*) FROM checkins WHERE date(at)=date(?)',(date.today().isoformat(),)).fetchone()[0]
-        stats['checkouts_today']=db.execute('SELECT count(*) FROM checkouts WHERE date(at)=date(?)',(date.today().isoformat(),)).fetchone()[0]
-        stats['revenue_today']=db.execute('SELECT coalesce(sum(amount),0) FROM payments WHERE date(paid_at)=date(?)',(date.today().isoformat(),)).fetchone()[0]
+        local_today=datetime.now(HOTEL_TIMEZONE).date()
+        today_start=datetime.combine(local_today,time.min,HOTEL_TIMEZONE).astimezone(timezone.utc).replace(tzinfo=None).isoformat(sep=' ')
+        tomorrow_start=datetime.combine(local_today+timedelta(days=1),time.min,HOTEL_TIMEZONE).astimezone(timezone.utc).replace(tzinfo=None).isoformat(sep=' ')
+        stats['bookings_today']=db.execute("SELECT count(*) FROM bookings WHERE created>=? AND created<? AND status!='Cancelled'",(today_start,tomorrow_start)).fetchone()[0]
+        stats['checkins_today']=db.execute('SELECT count(*) FROM checkins WHERE at>=? AND at<?',(today_start,tomorrow_start)).fetchone()[0]
+        stats['checkouts_today']=db.execute('SELECT count(*) FROM checkouts WHERE at>=? AND at<?',(today_start,tomorrow_start)).fetchone()[0]
+        stats['revenue_today']=db.execute('SELECT coalesce(sum(amount),0) FROM payments WHERE paid_at>=? AND paid_at<?',(today_start,tomorrow_start)).fetchone()[0]
         stats['pending']=db.execute("SELECT coalesce(sum(b.total-coalesce(p.paid,0)),0) FROM bookings b LEFT JOIN (SELECT booking_id,sum(amount) paid FROM payments GROUP BY booking_id) p ON p.booking_id=b.id WHERE b.status!='Cancelled'").fetchone()[0]
-        stats['monthly']=db.execute("SELECT coalesce(sum(amount),0) FROM payments WHERE strftime('%Y-%m',paid_at)=strftime('%Y-%m','now','localtime')").fetchone()[0]
+        month_start=datetime.combine(local_today.replace(day=1),time.min,HOTEL_TIMEZONE).astimezone(timezone.utc).replace(tzinfo=None).isoformat(sep=' ')
+        next_month=(local_today.replace(day=28)+timedelta(days=4)).replace(day=1)
+        next_month_start=datetime.combine(next_month,time.min,HOTEL_TIMEZONE).astimezone(timezone.utc).replace(tzinfo=None).isoformat(sep=' ')
+        stats['monthly']=db.execute('SELECT coalesce(sum(amount),0) FROM payments WHERE paid_at>=? AND paid_at<?',(month_start,next_month_start)).fetchone()[0]
         recent=db.execute('SELECT b.*,g.name guest,r.number room FROM bookings b JOIN guests g ON g.id=b.guest_id JOIN rooms r ON r.id=b.room_id ORDER BY b.id DESC LIMIT 8').fetchall()
-        chart=[db.execute("SELECT coalesce(sum(amount),0) FROM payments WHERE date(paid_at)>=date('now',?)",(f'-{i} days',)).fetchone()[0] for i in range(6,-1,-1)]
-    return render_template('dashboard.html', stats=stats, rooms=rooms, recent=recent, chart=chart)
+        chart=[]
+        for offset in range(6,-1,-1):
+            day=local_today-timedelta(days=offset)
+            start=datetime.combine(day,time.min,HOTEL_TIMEZONE).astimezone(timezone.utc).replace(tzinfo=None).isoformat(sep=' ')
+            end=datetime.combine(day+timedelta(days=1),time.min,HOTEL_TIMEZONE).astimezone(timezone.utc).replace(tzinfo=None).isoformat(sep=' ')
+            booked=db.execute("SELECT coalesce(sum(total),0) FROM bookings WHERE created>=? AND created<? AND status!='Cancelled'",(start,end)).fetchone()[0]
+            paid=db.execute('SELECT coalesce(sum(amount),0) FROM payments WHERE paid_at>=? AND paid_at<?',(start,end)).fetchone()[0]
+            chart.append({'label':day.strftime('%a'),'booked':float(booked),'paid':float(paid)})
+    chart_max=max((max(d['booked'],d['paid']) for d in chart),default=0)
+    return render_template('dashboard.html', stats=stats, rooms=rooms, recent=recent, chart=chart, chart_max=chart_max)
 
 @app.route('/rooms',methods=['GET','POST'])
 @login_required
