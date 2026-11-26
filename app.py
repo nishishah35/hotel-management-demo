@@ -103,7 +103,7 @@ def dashboard():
             ) THEN 'Reserved'
             ELSE 'Available' END"""
         rooms=db.execute(f'SELECT r.*, {room_status_sql} AS display_status FROM rooms r ORDER BY r.number',(today_text,)).fetchall()
-        stats={r['status'].lower():r['n'] for r in db.execute(f'SELECT display_status AS status,COUNT(*) AS n FROM (SELECT {room_status_sql} AS display_status FROM rooms r) GROUP BY display_status',(today_text,today_text)).fetchall()}
+        stats={r['status'].lower():r['n'] for r in db.execute(f'SELECT display_status AS status,COUNT(*) AS n FROM (SELECT {room_status_sql} AS display_status FROM rooms r) GROUP BY display_status',(today_text,)).fetchall()}
         stats['total_rooms']=sum(stats.values())
         today_start=datetime.combine(local_today,time.min,HOTEL_TIMEZONE).astimezone(timezone.utc).replace(tzinfo=None).isoformat(sep=' ')
         tomorrow_start=datetime.combine(local_today+timedelta(days=1),time.min,HOTEL_TIMEZONE).astimezone(timezone.utc).replace(tzinfo=None).isoformat(sep=' ')
