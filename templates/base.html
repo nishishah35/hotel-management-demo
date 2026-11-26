@@ -1,1 +1,154 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{% block title %}Dashboard{% endblock %} · {{hotel.get('hotel_name','Harbor House')}}</title><link rel="stylesheet" href="{{url_for('static',filename='css/app.css')}}"></head><body><aside class="sidebar"><a class="brand" href="{{url_for('dashboard')}}"><span class="brandmark">H</span><span>{{hotel.get('hotel_name','Harbor House')}}<small>HOTEL MANAGEMENT</small></span></a><div class="nav-label">WORKSPACE</div><nav>{% for label,endpoint,icon in [('Overview','dashboard','⌂'),('Rooms','rooms_page','▦'),('Bookings','bookings','▤'),('Guests','guests','♙'),('Front desk','operations','◷'),('Payments','payments','₹'),('Inventory','inventory','▧'),('Reports','reports','⌁'),('Settings','settings','⚙')] %}<a class="navlink {% if request.endpoint==endpoint %}active{% endif %}" href="{{url_for(endpoint)}}" title="{{label}}" aria-label="{{label}}"{% if request.endpoint==endpoint %} aria-current="page"{% endif %}><b aria-hidden="true">{{icon}}</b>{{label}}</a>{% endfor %}</nav><div class="sidebottom"><span class="avatar">{{session.get('user','A')[0]|upper}}</span><span>{{session.get('user','Admin')}}<small>Administrator</small></span><a class="signout" href="{{url_for('logout')}}">↗</a></div></aside><main class="main"><header class="topbar"><div><span class="eyebrow">{{hotel.get('hotel_name','Hotel')}}</span><strong>{% block heading %}Dashboard{% endblock %}</strong></div><div class="topright"><span class="live"><i></i> Local &amp; secure</span><span class="today">{{today}}</span></div></header><section class="content">{% with messages=get_flashed_messages(with_categories=true) %}{% for category,message in messages %}<div class="flash {{category}}">{{message}}</div>{% endfor %}{% endwith %}{% block content %}{% endblock %}</section><footer>Offline hotel operations <span>·</span> All data stored on this device</footer></main><script src="{{url_for('static',filename='js/app.js')}}"></script>{% block scripts %}{% endblock %}</body></html>
+
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <title>
+        {% block title %}Dashboard{% endblock %}
+        · {{ hotel.get('hotel_name', 'Harbor House') }}
+    </title>
+
+    <script>
+        try {
+            document.documentElement.dataset.theme =
+                localStorage.getItem("hotel-theme") === "dark" ? "dark" : "light";
+        } catch (_) {
+            document.documentElement.dataset.theme = "light";
+        }
+    </script>
+    <link rel="stylesheet"
+          href="{{ url_for('static', filename='css/app.css') }}">
+</head>
+
+<body>
+
+    <!-- Sidebar -->
+    <aside class="sidebar">
+
+        <a class="brand" href="{{ url_for('dashboard') }}">
+            <span class="brandmark">H</span>
+
+            <span>
+                {{ hotel.get('hotel_name', 'Harbor House') }}
+                <small>HOTEL MANAGEMENT</small>
+            </span>
+        </a>
+
+        <div class="nav-label">WORKSPACE</div>
+
+        <nav>
+            {% for label, endpoint, icon in [
+                ('Overview', 'dashboard', '⌂'),
+                ('Rooms', 'rooms_page', '▦'),
+                ('Bookings', 'bookings', '▤'),
+                ('Guests', 'guests', '♙'),
+                ('Payments', 'payments', '₹'),
+                ('Billing', 'billing', '$'),
+                ('Inventory', 'inventory', '▧'),
+                ('Reports', 'reports', '⌁'),
+                ('Settings', 'settings', '⚙')
+            ] %}
+
+                <a
+                    class="navlink {% if request.endpoint == endpoint %}active{% endif %}"
+                    href="{{ url_for(endpoint) }}"
+                    title="{{ label }}"
+                    aria-label="{{ label }}"
+
+                    {% if request.endpoint == endpoint %}
+                        aria-current="page"
+                    {% endif %}
+                >
+                    <b aria-hidden="true">{{ icon }}</b>
+                    {{ label }}
+                </a>
+
+            {% endfor %}
+        </nav>
+
+        <!-- Sidebar Bottom -->
+        <div class="sidebottom">
+
+            <span class="avatar">
+                {{ session.get('user', 'A')[0] | upper }}
+            </span>
+
+            <span>
+                {{ session.get('user', 'Admin') }}
+                <small>Administrator</small>
+            </span>
+
+            <a class="signout" href="{{ url_for('logout') }}">
+                ↗
+            </a>
+
+        </div>
+
+    </aside>
+
+    <!-- Main Content -->
+    <main class="main">
+
+        <!-- Header -->
+        <header class="topbar">
+
+            <div>
+                <span class="eyebrow">
+                    {{ hotel.get('hotel_name', 'Hotel') }}
+                </span>
+
+                <strong>
+                    {% block heading %}Dashboard{% endblock %}
+                </strong>
+            </div>
+
+            <div class="topright">
+                <button class="theme-toggle" id="theme-toggle" type="button"
+                        aria-label="Switch to dark theme" title="Switch to dark theme" aria-pressed="true">
+                    <span id="theme-icon" aria-hidden="true">☾</span>
+                </button>
+            </div>
+
+        </header>
+
+        <!-- Page Content -->
+        <section class="content">
+
+            <!-- Flash Messages -->
+            {% with messages = get_flashed_messages(with_categories=true) %}
+
+                {% for category, message in messages %}
+
+                    <div class="flash {{ category }}">
+                        {{ message }}
+                    </div>
+
+                {% endfor %}
+
+            {% endwith %}
+
+            {% block content %}
+            {% endblock %}
+
+        </section>
+
+        <!-- Footer -->
+        <footer>
+            Offline hotel operations
+            <span>·</span>
+            All data stored on this device
+        </footer>
+
+    </main>
+
+    <!-- JavaScript -->
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+
+    {% block scripts %}
+    {% endblock %}
+
+</body>
+</html>
